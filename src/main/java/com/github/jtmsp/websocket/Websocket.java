@@ -23,24 +23,18 @@
  */
 package com.github.jtmsp.websocket;
 
-import java.io.IOException;
-import java.net.URI;
-import java.net.URISyntaxException;
-import java.util.HashMap;
-import java.util.Map;
-
-import javax.websocket.CloseReason;
-import javax.websocket.CloseReason.CloseCodes;
-import javax.websocket.DeploymentException;
-import javax.websocket.EndpointConfig;
-import javax.websocket.Session;
-
-import org.glassfish.tyrus.ext.client.java8.SessionBuilder;
-
 import com.github.jtmsp.websocket.jsonrpc.JSONRPC;
 import com.github.jtmsp.websocket.jsonrpc.JSONRPCResult;
 import com.google.gson.Gson;
 import com.google.gson.JsonSyntaxException;
+import org.java_websocket.client.WebSocketClient;
+import org.java_websocket.handshake.ServerHandshake;
+
+import javax.websocket.CloseReason;
+import java.net.URI;
+import java.net.URISyntaxException;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Websocket wrapper for tendermint JSON-RPC
@@ -52,7 +46,7 @@ public class Websocket {
 
     public static String DEFAULT_DESTINATION = "ws://127.0.0.1:46657/websocket";
 
-    private Session wsSession;
+    private WebSocketClient wsSession;
     private Map<String, WSResponse> callbacks = new HashMap<>();
     private Gson gson = new Gson();
     private URI destination;
@@ -112,16 +106,39 @@ public class Websocket {
     public void reconnectWebsocket() throws WebsocketException {
 
         if (wsSession == null || !wsSession.isOpen()) {
+
+            wsSession = new WebSocketClient(destination) {
+                @Override
+                public void onOpen(ServerHandshake handshakedata) {
+                    Websocket.this.onOpen();
+                }
+
+                @Override
+                public void onMessage(String message) {
+                    Websocket.this.onMessage(message);
+                }
+
+                @Override
+                public void onClose(int code, String reason, boolean remote) {
+                    Websocket.this.onClose(
+                            new CloseReason(
+                                    CloseReason.CloseCodes.getCloseCode(code),
+                                    reason)
+                    );
+                }
+
+                @Override
+                public void onError(Exception ex) {
+                    Websocket.this.onError(ex);
+                }
+            };
+
             try {
-                wsSession = new SessionBuilder().uri(destination) //
-                        .onOpen(this::onOpen) //
-                        .onError(this::onError) //
-                        .onClose(this::onClose) //
-                        .messageHandler(String.class, this::onMessage) //
-                        .connect();
-            } catch (IOException | DeploymentException e) {
+                wsSession.connectBlocking();
+            } catch (InterruptedException e) {
                 throw new WebsocketException(e);
             }
+
         }
     }
 
@@ -143,9 +160,9 @@ public class Websocket {
     public void disconnect() throws WebsocketException {
         try {
             if (wsSession != null) {
-                wsSession.close(new CloseReason(CloseCodes.NORMAL_CLOSURE, "Manual Close"));
+                wsSession.closeBlocking();
             }
-        } catch (IOException e) {
+        } catch (InterruptedException e) {
             throw new WebsocketException(e);
         }
     }
@@ -167,18 +184,18 @@ public class Websocket {
      */
     public void sendMessage(JSONRPC rpc, WSResponse callback) {
         callbacks.put(rpc.id, callback);
-        wsSession.getAsyncRemote().sendText(gson.toJson(rpc));
+        wsSession.send(gson.toJson(rpc));
     }
 
-    private void onOpen(Session s, EndpointConfig ec) {
+    private void onOpen() {
         status.wasOpened();
     }
 
-    private void onError(Session s, Throwable t) {
+    private void onError(Throwable t) {
         status.hadError(t);
     }
 
-    private void onClose(Session s, CloseReason cr) {
+    private void onClose(CloseReason cr) {
         status.wasClosed(cr);
     }
 
